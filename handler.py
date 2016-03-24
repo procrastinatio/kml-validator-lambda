@@ -21,21 +21,23 @@ import requests
 
 
 
-def validate(fname, schema_name):
+def validate(file_fullpath, schema_name):
 
-    is_valid = None
-    reason = 'Unknwon'
     xmlschema = None
+    status ='unknwon'
+    fname = os.path.basename(file_fullpath)
+    
 
 
-    #with open(schema) as f:
-    #    doc = etree.parse(schema)
     with open(schema_name) as f:
         try:
             doc = etree.parse(f)
             logger.debug(f.read())
         except:
-            return(is_valid, 'Cannot parse schame')
+             msg = "Cannot read schema '{}'".format(schema_name)
+             logger.error(msg)
+
+             return('error', msg)
 
     #print "Validating schema ... "
     try:
@@ -43,26 +45,25 @@ def validate(fname, schema_name):
         logger.debug('schema')
         logger.debug(xmlschema)
     except lxml.etree.XMLSchemaParseError as e:
-        reason = e
+        msg = "Cannot parse schema '{}'".format(schema_name)
         logger.debug(e)
-        return (is_valid, e)
+        return ('error', msg)
 
 
     #print "Schema OK"
     if xmlschema is None:
         logger.debug('schema is None')
-        return (None, 'No schema')
+        return ('error', 'No schema')
 
-    with open(fname) as f:
+    with open(file_fullpath) as f:
         try:
             doc = etree.parse(f)
-            logger.debug(fname)
+            logger.debug(file_fullpath)
             logger.debug(doc)
         except lxml.etree.XMLSyntaxError as e:
-            is_valid = False
-            reason = e
+            msg = "XML syntax error in kml '{}'".format(fname)
             logger.debug(e)
-            return (None, e)
+            return ('error', msg)
 
     #print "Validating document ..."
     try:
@@ -70,17 +71,16 @@ def validate(fname, schema_name):
         
         logger.debug('assertValid')
     except lxml.etree.DocumentInvalid as e:
-        #print e
-        is_valid = False
         logger.debug(e)
-        return (is_valid, str(e))
+        msg = "KML document '{}' is invalid\n\n{}".format(fname, repr(e))
+        return ('invalid', msg)
     except lxml.etree.XMLSyntaxError as e:
         #print e
-        is_valid =  False
+        msg = "KML document '{}' has syntax error(s)\n\n{}".format(fname, repr(e))
         logger.debug(e)
-        return (is_valid, str(e))
+        return ('invalid', msg)
     except:
-        return(False, 'Validation failed for an unknown reason')
+        return('invalid', 'Validation failed for an unknown reason')
 
     #print "Document OK"
     if xmlschema is not None:
@@ -88,11 +88,16 @@ def validate(fname, schema_name):
       error = log.last_error
       logger.debug(error)
 
-    return (is_valid, reason)
+    return ('valid', 'KML is valid')
 
 
 def lambda_handler(event, context):
     #print("Received event: " + json.dumps(event, indent=2))
+    
+    schema = 'schemas/ogckml22.xsd'    
+
+    warnings = []
+    errors = []
 
     if not 'url' in event:
         return {'status': 'error', 'message': 'No KML url given'}
@@ -100,11 +105,16 @@ def lambda_handler(event, context):
     kml_url = event['url']
 
     content = None
-    is_valid = False
-    xml = None
     r = requests.get(kml_url, stream=True)
 
     if r.status_code == 200:
+        content_type = r.headers.get('content-type')
+        if content_type =='application/vnd.google-earth.kmz':
+             return {'status': 'error', 'url': kml_url, 'schema': os.path.basename(schema),  'message': 'KMZ are not supported now' }
+
+        if content_type != 'application/vnd.google-earth.kml+xml':
+             warnings.append('Set the "Content-Type" to "application/vnd.google-earth.kml+xml" please')
+
         kml_string = requests.get(kml_url).content
         tmp_kml = os.path.join('/tmp', os.path.basename(kml_url))
         with open(tmp_kml, 'w') as f:
@@ -116,13 +126,12 @@ def lambda_handler(event, context):
         with open(tmp_kml, 'w') as f:
             f.write(content)
         '''
-        schema = 'schemas/ogckml22.xsd'    
 
-        (is_valid, reason) = validate(tmp_kml, schema)
+        (status, msg) = validate(tmp_kml, schema)
 
-        return {'status': 'done', 'url': kml_url, 'schema': os.path.basename(schema), 'valid': is_valid, 'reason': reason }
+        return {'status': status, 'url': kml_url, 'schema': os.path.basename(schema),  'message': msg , 'warnings': warnings}
     else:
-      return {'status': 'error', 'message': 'Cannot download KML {}'.format(kml_url)}
+        return {'status': 'error', 'url': kml_url, 'schema': os.path.basename(schema), 'message': 'Cannot download KML {}'.format(kml_url), 'warnings': warnings}
 
 
 
